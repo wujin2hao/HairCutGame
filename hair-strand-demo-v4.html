@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>发丝渲染 v4.1 · 圆弧+直线两段</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, 'PingFang SC', sans-serif;
+    background: #f6f1e8; min-height: 100vh;
+    display: flex; flex-direction: column;
+    align-items: center; padding: 28px 16px;
+  }
+  h1 { font-size: 20px; font-weight: 700; margin-bottom: 4px; color: #1a1a1a; }
+  .sub { color: #888; font-size: 13px; margin-bottom: 18px; }
+  .wrap { background: #fff; border: 2px solid #1a1a1a; border-radius: 12px; box-shadow: 5px 5px 0 #1a1a1a; overflow: hidden; }
+  canvas { display: block; cursor: crosshair; }
+  .ctrl { margin-top: 14px; display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+  button {
+    font-family: inherit; font-size: 13px; padding: 9px 18px;
+    background: white; border: 2px solid #1a1a1a; border-radius: 8px;
+    cursor: pointer; box-shadow: 3px 3px 0 #1a1a1a;
+    transition: transform .08s, box-shadow .08s;
+  }
+  button:hover { background: #fff8e8; }
+  button:active { transform: translate(2px,2px); box-shadow: 1px 1px 0 #1a1a1a; }
+  .info { margin-top: 12px; font-size: 12px; color: #666; text-align: center; line-height: 1.9; }
+</style>
+</head>
+<body>
+<h1>发丝渲染 v4.1</h1>
+<p class="sub">顶部圆弧贝塞尔（与 v4 完全相同）+ 底部竖直直线，两段路径弧度不变 · 点击剪发</p>
+<div class="wrap"><canvas id="c" width="600" height="520"></canvas></div>
+<div class="ctrl">
+  <button id="reset">🔄 重置</button>
+  <button id="dbg">🔵 显示结构（橙点=弧线段终点）</button>
+</div>
+<div class="info">
+  每根发丝 = <b>贝塞尔弧</b>（P0→arcEnd，v4 原版弧度）+ <b>竖直直线</b>（arcEnd→fullEnd）<br>
+  调 <b>R</b> 控制弧度，调 <b>EXTRA</b> 控制底部长度，互不干扰
+</div>
+<script>
+const cv = document.getElementById('c');
+const ctx = cv.getContext('2d');
+const W = cv.width, H = cv.height;
+
+// ── 参数 ─────────────────────────────────────────────
+const R     = 116;       // 圆弧半径，与 v4 完全一致
+const EXTRA = 62;        // 底部直线延伸，不影响顶部弧度
+const CX    = 300;
+const CY0   = 155;
+const CYB   = CY0 + R;  // 271：圆弧终点（最宽处）
+const CYBT  = CYB + EXTRA; // 333：发梢终点
+const N     = 58;
+
+let strands = [], cutY = null, debug = false;
+
+// ── 生成单根发丝数据 ──────────────────────────────────
+function makeStrand(pos, jitter = true) {
+  const theta = pos === 0 ? 0
+    : Math.sign(pos) * Math.asin(Math.min(0.9999, Math.abs(pos) * 2));
+  // 四分之一圆弧标准贝塞尔控制杆长度（与 v4 完全相同）
+  const cpLen = (4/3) * R * Math.tan(Math.abs(theta) / 4);
+
+  const jx = jitter ? (Math.random()-0.5)*2.5 : 0;
+  const jy = jitter ? (Math.random()-0.5)*2   : 0;
+
+  const p0 = { x: CX + (jitter ? (Math.random()-0.5)*3 : 0), y: CY0 };
+
+  // 圆弧终点：y = CYB（与 v4 的 p3 完全一致）
+  const arcEnd = { x: CX + Math.sin(theta)*R + jx, y: CYB + jy };
+
+  // 贝塞尔控制点（与 v4 完全一致）
+  const p1 = { x: p0.x + Math.sin(theta)*cpLen, y: p0.y + Math.cos(theta)*cpLen };
+  const p2 = { x: arcEnd.x,                     y: arcEnd.y - cpLen };
+
+  // 直线延伸终点（arcEnd 正下方 EXTRA 像素）
+  const fullEnd = { x: arcEnd.x, y: CYBT + jy };
+
+  return { p0, p1, p2, arcEnd, fullEnd, theta, cpLen };
+}
+
+function initStrands() {
+  strands = [];
+  for (let i = 0; i < N; i++) {
+    const s = makeStrand((i/(N-1))-0.5, true);
+    strands.push({ ...s,
+      w: 5+Math.random()*2.5, hue: 265+(Math.random()-0.5)*16,
+      ltop: 28+(Math.random()-0.5)*5, lbot: 6+(Math.random()-0.5)*3 });
+  }
+  cutY = null;
+}
+
+// ── 绘制单根发丝 ──────────────────────────────────────
+function drawStrand(s) {
+  const grad = ctx.createLinearGradient(s.p0.x, s.p0.y, s.fullEnd.x, s.fullEnd.y);
+  grad.addColorStop(0,    `hsl(${s.hue},26%,${s.ltop}%)`);
+  grad.addColorStop(0.45, `hsl(${s.hue},34%,${(s.ltop+s.lbot)/2}%)`);
+  grad.addColorStop(1,    `hsl(${s.hue},44%,${s.lbot}%)`);
+
+  ctx.beginPath();
+  ctx.moveTo(s.p0.x, s.p0.y);
+  // 第一段：贝塞尔圆弧（顶部弧度，与 v4 完全一致）
+  ctx.bezierCurveTo(s.p1.x, s.p1.y, s.p2.x, s.p2.y, s.arcEnd.x, s.arcEnd.y);
+  // 第二段：竖直直线延伸（底部长度）
+  ctx.lineTo(s.fullEnd.x, s.fullEnd.y);
+
+  ctx.strokeStyle = grad;
+  ctx.lineWidth   = s.w;
+  ctx.lineCap     = 'round';
+  ctx.stroke();
+}
+
+// ── 调试模式 ──────────────────────────────────────────
+function drawDebug(s) {
+  ctx.save();
+  ctx.strokeStyle = 'rgba(50,120,255,0.65)';
+  ctx.lineWidth = 1; ctx.setLineDash([3,3]);
+  ctx.beginPath(); ctx.moveTo(s.p0.x,s.p0.y); ctx.lineTo(s.p1.x,s.p1.y); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(s.arcEnd.x,s.arcEnd.y); ctx.lineTo(s.p2.x,s.p2.y); ctx.stroke();
+  ctx.setLineDash([]);
+  [s.p1,s.p2].forEach(p => {
+    ctx.beginPath(); ctx.arc(p.x,p.y,3,0,Math.PI*2);
+    ctx.fillStyle='rgba(50,120,255,0.8)'; ctx.fill();
+  });
+  // 橙点：弧线段与直线段的分界点
+  ctx.beginPath(); ctx.arc(s.arcEnd.x,s.arcEnd.y,4,0,Math.PI*2);
+  ctx.fillStyle='rgba(255,100,50,0.8)'; ctx.fill();
+  ctx.restore();
+}
+
+// ── 实心底色（轮廓用两段路径）────────────────────────
+function drawBase() {
+  const L  = makeStrand(-0.5, false);
+  const Rr = makeStrand(+0.5, false);
+  const grad = ctx.createLinearGradient(CX,CY0,CX,CYBT);
+  grad.addColorStop(0,'#3e2153'); grad.addColorStop(0.35,'#200f30'); grad.addColorStop(1,'#09060f');
+
+  ctx.beginPath();
+  ctx.moveTo(L.p0.x, L.p0.y);
+  ctx.bezierCurveTo(L.p1.x,L.p1.y, L.p2.x,L.p2.y, L.arcEnd.x,L.arcEnd.y);
+  ctx.lineTo(L.fullEnd.x, L.fullEnd.y);   // 左侧竖线
+  ctx.lineTo(Rr.fullEnd.x, Rr.fullEnd.y); // 底边
+  ctx.lineTo(Rr.arcEnd.x, Rr.arcEnd.y);   // 右侧竖线（向上）
+  ctx.bezierCurveTo(Rr.p2.x,Rr.p2.y, Rr.p1.x,Rr.p1.y, Rr.p0.x,Rr.p0.y); // 右侧弧（逆向）
+  ctx.closePath();
+
+  ctx.fillStyle = grad; ctx.fill();
+  ctx.strokeStyle = '#15101e'; ctx.lineWidth = 3; ctx.stroke();
+}
+
+// ── 角色头部 ──────────────────────────────────────────
+function drawHead() {
+  ctx.lineWidth=3; ctx.strokeStyle='#1a1a1a';
+  ctx.fillStyle='#fffbf4';
+  ctx.beginPath();
+  ctx.moveTo(225,392); ctx.lineTo(225,432); ctx.lineTo(145,515);
+  ctx.lineTo(455,515); ctx.lineTo(375,432); ctx.lineTo(375,392);
+  ctx.closePath(); ctx.fill(); ctx.stroke();
+
+  ctx.fillStyle='#fff7ec';
+  ctx.beginPath(); ctx.ellipse(300,328,102,108,0,0,Math.PI*2); ctx.fill(); ctx.stroke();
+
+  [[-103,10],[103,10]].forEach(([dx,dy])=>{
+    ctx.beginPath(); ctx.ellipse(300+dx,328+dy,15,21,0,0,Math.PI*2); ctx.fill(); ctx.stroke();
+  });
+
+  ctx.globalAlpha=0.6; ctx.fillStyle='#f7c0c0';
+  ctx.beginPath(); ctx.ellipse(252,352,19,12,0,0,Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(348,352,19,12,0,0,Math.PI*2); ctx.fill();
+  ctx.globalAlpha=1;
+
+  ctx.fillStyle='#1a1a1a';
+  [[273,313],[327,313]].forEach(([x,y])=>{
+    ctx.beginPath(); ctx.ellipse(x,y,8,11,0,0,Math.PI*2); ctx.fill();
+  });
+  ctx.lineWidth=2;
+  ctx.beginPath(); ctx.arc(300,362,9,0,Math.PI); ctx.stroke();
+  ctx.fillStyle='#1a1a1a';
+  ctx.beginPath(); ctx.arc(300,340,2,0,Math.PI*2); ctx.fill();
+}
+
+// ── 主渲染 ────────────────────────────────────────────
+function render() {
+  ctx.clearRect(0,0,W,H);
+  drawHead();
+
+  const clipH = cutY !== null ? cutY : CYBT+4;
+  ctx.save();
+  ctx.beginPath(); ctx.rect(0,0,W,clipH); ctx.clip();
+
+  drawBase();
+  [...strands].sort((a,b)=>Math.abs(b.theta)-Math.abs(a.theta))
+    .forEach(s=>{ drawStrand(s); if(debug) drawDebug(s); });
+
+  ctx.restore();
+
+  if (cutY !== null) {
+    ctx.save();
+    ctx.strokeStyle='rgba(200,55,55,0.55)'; ctx.lineWidth=1.5; ctx.setLineDash([6,4]);
+    ctx.beginPath(); ctx.moveTo(80,cutY); ctx.lineTo(520,cutY); ctx.stroke();
+    ctx.setLineDash([]); ctx.restore();
+  }
+}
+
+// ── 切割 & 事件 ───────────────────────────────────────
+function cutAt(y) {
+  if (y < CY0+15 || y > CYBT+30) return;
+  cutY = y; render();
+}
+cv.addEventListener('click', e=>{
+  const r=cv.getBoundingClientRect(); cutAt(e.clientY-r.top);
+});
+document.getElementById('reset').addEventListener('click', ()=>{ initStrands(); render(); });
+document.getElementById('dbg').addEventListener('click', ()=>{ debug=!debug; render(); });
+
+initStrands(); render();
+</script>
+</body>
+</html>
