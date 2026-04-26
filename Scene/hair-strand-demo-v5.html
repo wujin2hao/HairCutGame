@@ -1,0 +1,569 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>剪刘海 · Step 1 · 剪刀手感</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, 'PingFang SC', sans-serif;
+    background: #f6f1e8; min-height: 100vh;
+    display: flex; flex-direction: column;
+    align-items: center; padding: 28px 16px;
+  }
+  h1  { font-size: 20px; font-weight: 700; margin-bottom: 4px; color: #1a1a1a; }
+  .sub { color: #888; font-size: 13px; margin-bottom: 18px; }
+  .wrap {
+    background: #fff; border: 2px solid #1a1a1a; border-radius: 12px;
+    box-shadow: 5px 5px 0 #1a1a1a; overflow: hidden;
+  }
+  canvas { display: block; cursor: none; }
+  .ctrl {
+    margin-top: 14px; display: flex; gap: 10px;
+    flex-wrap: wrap; justify-content: center;
+  }
+  button {
+    font-family: inherit; font-size: 13px; padding: 9px 18px;
+    background: white; border: 2px solid #1a1a1a; border-radius: 8px;
+    cursor: pointer; box-shadow: 3px 3px 0 #1a1a1a;
+    transition: transform .08s, box-shadow .08s;
+  }
+  button:hover  { background: #fff8e8; }
+  button:active { transform: translate(2px,2px); box-shadow: 1px 1px 0 #1a1a1a; }
+  .key-hint {
+    margin-top: 10px; display: flex; gap: 24px;
+    justify-content: center; font-size: 13px; color: #555;
+  }
+  .key-hint span { display: flex; align-items: center; gap: 6px; }
+  kbd {
+    padding: 3px 8px; border: 2px solid #1a1a1a; border-radius: 5px;
+    box-shadow: 2px 2px 0 #1a1a1a; font-family: inherit; font-size: 12px;
+    background: #fff; font-weight: bold;
+  }
+  .info { margin-top: 10px; font-size: 12px; color: #888; text-align: center; line-height: 1.9; }
+</style>
+</head>
+<body>
+
+<h1>✂ 剪刘海 · Step 1 剪刀手感</h1>
+<p class="sub">重力 + 推力 + 阻尼 — 目标：稳定悬停并穿越刘海</p>
+
+<div class="wrap"><canvas id="c" width="600" height="520"></canvas></div>
+
+<div class="ctrl">
+  <button id="btnReset">🔄 重置</button>
+  <button id="btnDbg">🔵 调试</button>
+</div>
+<div class="key-hint">
+  <span>⬆ 抬升 <kbd>SPACE</kbd></span>
+  <span>✂ 开合 <kbd>J</kbd> / 鼠标点击</span>
+</div>
+<div class="info">
+  按住 <b>空格</b> 抵抗重力 · 松开立刻下坠 · 剪刀自动向左推进<br>
+  节奏：每秒约 3~5 次短促点按，维持近似悬停
+</div>
+
+<script>
+// ══════════════════════════════════════════════════════════════════
+//  画布
+// ══════════════════════════════════════════════════════════════════
+const cv  = document.getElementById('c');
+const ctx = cv.getContext('2d');
+const W   = cv.width;   // 600
+const H   = cv.height;  // 520
+
+// ══════════════════════════════════════════════════════════════════
+//  头发参数（与 v4 完全一致）
+// ══════════════════════════════════════════════════════════════════
+const R     = 116;
+const EXTRA = 62;
+const CX    = 300;
+const CY0   = 155;
+const CYB   = CY0 + R;       // 271 — 圆弧终点（最宽处）
+const CYBT  = CYB + EXTRA;   // 333 — 发梢终点
+const N     = 58;             // 发丝根数
+
+// ══════════════════════════════════════════════════════════════════
+//  物理配置（GDD 推荐起手值）
+// ══════════════════════════════════════════════════════════════════
+const CONFIG = {
+  gravity:           1500,  // px/s²  向下
+  thrustForce:       2200,  // px/s²  向上（按住空格时）
+  linearDrag:        2.0,   // 阻尼系数（指数衰减）
+  autoAdvanceSpeed:  75,    // px/s   向左自动推进
+
+  startX:  560,   // 剪刀中心初始 X
+  startY:  230,   // 剪刀中心初始 Y
+  minY:     90,   // 上边界
+  maxY:    470,   // 下边界
+};
+
+// ══════════════════════════════════════════════════════════════════
+//  剪刀图片 · jiandao.png 130×173 RGBA
+//  原图：握把在顶（rows 0~60），刀尖在底（rows 110~173）
+//  旋转策略：+90°（顺时针）
+//    → 原图顶(握把) → 显示右侧
+//    → 原图底(刀尖) → 显示左侧  ← 剪刀向左运动，完美
+//  旋转后显示尺寸：
+//    LEN   = 原图高 173 缩放后 → 水平长度（握把→刀尖）
+//    THICK = 原图宽 130 缩放后 → 垂直厚度（两叶片上下）
+// ══════════════════════════════════════════════════════════════════
+const scissorImg    = new Image();
+scissorImg.src      = '../Assets/jiandao.png';
+
+const SC_ORIG_W  = 130;   // 原图像素宽
+const SC_ORIG_H  = 173;   // 原图像素高
+const SC_LEN     = 110;   // 旋转后水平长度 px（可调）
+const SC_THICK   = Math.round(SC_ORIG_W / SC_ORIG_H * SC_LEN); // ≈ 83px
+
+// 开合动画：在旋转坐标系里，图片左半 → 上叶片，右半 → 下叶片
+// 偏移量：各向外挪 MAX_OPEN_PX 像素
+const MAX_OPEN_PX = 14;
+
+// ══════════════════════════════════════════════════════════════════
+//  状态
+// ══════════════════════════════════════════════════════════════════
+let strands   = [];
+let debug     = false;
+let lastTime  = null;
+
+const keys = { space: false };
+
+const sc = {
+  x:       CONFIG.startX,
+  y:       CONFIG.startY,
+  vy:      0,          // 垂直速度（px/s，向下为正）
+  open:    false,      // 目标开合状态（toggle）
+  openAmt: 0,          // 0=合 1=开（动画插值，每帧更新）
+};
+
+// ══════════════════════════════════════════════════════════════════
+//  输入
+// ══════════════════════════════════════════════════════════════════
+document.addEventListener('keydown', e => {
+  if (e.code === 'Space') { e.preventDefault(); keys.space = true; }
+  if (e.code === 'KeyJ')  { sc.open = !sc.open; }
+});
+document.addEventListener('keyup', e => {
+  if (e.code === 'Space') keys.space = false;
+});
+cv.addEventListener('mousedown', e => {
+  e.preventDefault();
+  sc.open = !sc.open;
+});
+
+// ══════════════════════════════════════════════════════════════════
+//  物理更新
+// ══════════════════════════════════════════════════════════════════
+function updatePhysics(dt) {
+  // 1. 重力加速度（向下，持续施加）
+  sc.vy += CONFIG.gravity * dt;
+
+  // 2. 抬升推力（按住空格时向上）
+  if (keys.space) sc.vy -= CONFIG.thrustForce * dt;
+
+  // 3. 线性阻尼：速度指数衰减，防止无限累积
+  //    linearDrag=2.0 → 约 0.35s 速度减半
+  sc.vy *= Math.exp(-CONFIG.linearDrag * dt);
+
+  // 4. 水平自动推进（恒定向左）
+  sc.x -= CONFIG.autoAdvanceSpeed * dt;
+
+  // 5. 位置积分
+  sc.y += sc.vy * dt;
+
+  // 6. 垂直边界约束
+  if (sc.y < CONFIG.minY) { sc.y = CONFIG.minY; sc.vy = Math.max(0, sc.vy); }
+  if (sc.y > CONFIG.maxY) { sc.y = CONFIG.maxY; sc.vy = Math.min(0, sc.vy); }
+
+  // 7. 开合动画插值（速率 20/s → 约 50ms 内完成）
+  sc.openAmt += ((sc.open ? 1 : 0) - sc.openAmt) * Math.min(1, dt * 20);
+
+  // 8. 飞出左侧 → 自动重置
+  if (sc.x < -SC_LEN) resetScissor();
+}
+
+function resetScissor() {
+  sc.x       = CONFIG.startX;
+  sc.y       = CONFIG.startY;
+  sc.vy      = 0;
+  sc.open    = false;
+  sc.openAmt = 0;
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  发丝生成（与 v4 完全一致）
+// ══════════════════════════════════════════════════════════════════
+function makeStrand(pos, jitter = true) {
+  const theta = pos === 0 ? 0
+    : Math.sign(pos) * Math.asin(Math.min(0.9999, Math.abs(pos) * 2));
+  const cpLen = (4/3) * R * Math.tan(Math.abs(theta) / 4);
+  const jx = jitter ? (Math.random() - 0.5) * 2.5 : 0;
+  const jy = jitter ? (Math.random() - 0.5) * 2   : 0;
+  const p0      = { x: CX + (jitter ? (Math.random()-0.5)*3 : 0), y: CY0 };
+  const arcEnd  = { x: CX + Math.sin(theta)*R + jx, y: CYB + jy };
+  const p1      = { x: p0.x + Math.sin(theta)*cpLen, y: p0.y + Math.cos(theta)*cpLen };
+  const p2      = { x: arcEnd.x, y: arcEnd.y - cpLen };
+  const fullEnd = { x: arcEnd.x, y: CYBT + jy };
+  return { p0, p1, p2, arcEnd, fullEnd, theta, cpLen };
+}
+
+function initStrands() {
+  strands = [];
+  for (let i = 0; i < N; i++) {
+    const s = makeStrand((i / (N-1)) - 0.5, true);
+    strands.push({
+      ...s,
+      w:    5   + Math.random() * 2.5,
+      hue:  265 + (Math.random() - 0.5) * 16,
+      ltop: 28  + (Math.random() - 0.5) * 5,
+      lbot: 6   + (Math.random() - 0.5) * 3,
+    });
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  绘制：头部（与 v4 完全一致）
+// ══════════════════════════════════════════════════════════════════
+function drawHead() {
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = '#1a1a1a';
+
+  // 脖颈与肩部
+  ctx.fillStyle = '#fffbf4';
+  ctx.beginPath();
+  ctx.moveTo(225,392); ctx.lineTo(225,432); ctx.lineTo(145,515);
+  ctx.lineTo(455,515); ctx.lineTo(375,432); ctx.lineTo(375,392);
+  ctx.closePath(); ctx.fill(); ctx.stroke();
+
+  // 脸部椭圆
+  ctx.fillStyle = '#fff7ec';
+  ctx.beginPath();
+  ctx.ellipse(300, 328, 102, 108, 0, 0, Math.PI*2);
+  ctx.fill(); ctx.stroke();
+
+  // 耳朵
+  [[-103, 10], [103, 10]].forEach(([dx, dy]) => {
+    ctx.beginPath();
+    ctx.ellipse(300+dx, 328+dy, 15, 21, 0, 0, Math.PI*2);
+    ctx.fill(); ctx.stroke();
+  });
+
+  // 腮红
+  ctx.globalAlpha = 0.6;
+  ctx.fillStyle = '#f7c0c0';
+  ctx.beginPath(); ctx.ellipse(252, 352, 19, 12, 0, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(348, 352, 19, 12, 0, 0, Math.PI*2); ctx.fill();
+  ctx.globalAlpha = 1;
+
+  // 眼睛
+  ctx.fillStyle = '#1a1a1a';
+  [[273, 313], [327, 313]].forEach(([x, y]) => {
+    ctx.beginPath(); ctx.ellipse(x, y, 8, 11, 0, 0, Math.PI*2); ctx.fill();
+  });
+
+  // 嘴
+  ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(300, 362, 9, 0, Math.PI); ctx.stroke();
+
+  // 鼻
+  ctx.fillStyle = '#1a1a1a';
+  ctx.beginPath(); ctx.arc(300, 340, 2, 0, Math.PI*2); ctx.fill();
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  绘制：头发底色
+// ══════════════════════════════════════════════════════════════════
+function drawBase() {
+  const L  = makeStrand(-0.5, false);
+  const Rr = makeStrand(+0.5, false);
+  const grad = ctx.createLinearGradient(CX, CY0, CX, CYBT);
+  grad.addColorStop(0,    '#3e2153');
+  grad.addColorStop(0.35, '#200f30');
+  grad.addColorStop(1,    '#09060f');
+  ctx.beginPath();
+  ctx.moveTo(L.p0.x, L.p0.y);
+  ctx.bezierCurveTo(L.p1.x, L.p1.y, L.p2.x, L.p2.y, L.arcEnd.x, L.arcEnd.y);
+  ctx.lineTo(L.fullEnd.x, L.fullEnd.y);
+  ctx.lineTo(Rr.fullEnd.x, Rr.fullEnd.y);
+  ctx.lineTo(Rr.arcEnd.x, Rr.arcEnd.y);
+  ctx.bezierCurveTo(Rr.p2.x, Rr.p2.y, Rr.p1.x, Rr.p1.y, Rr.p0.x, Rr.p0.y);
+  ctx.closePath();
+  ctx.fillStyle = grad;   ctx.fill();
+  ctx.strokeStyle = '#15101e'; ctx.lineWidth = 3; ctx.stroke();
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  绘制：单根发丝
+// ══════════════════════════════════════════════════════════════════
+function drawStrand(s) {
+  const grad = ctx.createLinearGradient(s.p0.x, s.p0.y, s.fullEnd.x, s.fullEnd.y);
+  grad.addColorStop(0,    `hsl(${s.hue},26%,${s.ltop}%)`);
+  grad.addColorStop(0.45, `hsl(${s.hue},34%,${(s.ltop+s.lbot)/2}%)`);
+  grad.addColorStop(1,    `hsl(${s.hue},44%,${s.lbot}%)`);
+  ctx.beginPath();
+  ctx.moveTo(s.p0.x, s.p0.y);
+  ctx.bezierCurveTo(s.p1.x, s.p1.y, s.p2.x, s.p2.y, s.arcEnd.x, s.arcEnd.y);
+  ctx.lineTo(s.fullEnd.x, s.fullEnd.y);
+  ctx.strokeStyle = grad;
+  ctx.lineWidth   = s.w;
+  ctx.lineCap     = 'round';
+  ctx.stroke();
+}
+
+function drawDebugStrand(s) {
+  ctx.save();
+  ctx.strokeStyle = 'rgba(50,120,255,0.65)';
+  ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
+  ctx.beginPath(); ctx.moveTo(s.p0.x, s.p0.y); ctx.lineTo(s.p1.x, s.p1.y); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(s.arcEnd.x, s.arcEnd.y); ctx.lineTo(s.p2.x, s.p2.y); ctx.stroke();
+  ctx.setLineDash([]);
+  [s.p1, s.p2].forEach(p => {
+    ctx.beginPath(); ctx.arc(p.x, p.y, 3, 0, Math.PI*2);
+    ctx.fillStyle = 'rgba(50,120,255,0.8)'; ctx.fill();
+  });
+  ctx.beginPath(); ctx.arc(s.arcEnd.x, s.arcEnd.y, 4, 0, Math.PI*2);
+  ctx.fillStyle = 'rgba(255,100,50,0.8)'; ctx.fill();
+  ctx.restore();
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  绘制：剪刀（核心）
+//
+//  坐标约定：
+//    sc.x / sc.y = 剪刀图像中心（世界坐标）
+//
+//  旋转变换：ctx.rotate(+PI/2) 后，旋转坐标系（rx, ry）
+//    rx 轴 ↔ 世界 +Y 方向（向下）
+//    ry 轴 ↔ 世界 -X 方向（向左）
+//
+//  图片在旋转系中绘制：
+//    DW（原图宽 130 缩放）→ rx 方向（世界上下）
+//    DH（原图高 173 缩放）→ ry 方向（世界左右）
+//
+//  开合动画：
+//    图片左半（rx<0）= 上叶片，向 -rx 偏移 = 世界向上 ✓
+//    图片右半（rx>0）= 下叶片，向 +rx 偏移 = 世界向下 ✓
+// ══════════════════════════════════════════════════════════════════
+function drawScissor() {
+  // 旋转系中的绘制尺寸
+  const DW = SC_THICK;  // ≈83px，rx 方向（世界上下方向的厚度）
+  const DH = SC_LEN;    // 110px，ry 方向（世界左右方向的长度）
+
+  const openPx = sc.openAmt * MAX_OPEN_PX;
+
+  ctx.save();
+  ctx.translate(sc.x, sc.y);
+  ctx.rotate(Math.PI / 2);   // +90° 顺时针：刀尖→左，握把→右
+
+  const imgReady = scissorImg.complete && scissorImg.naturalWidth > 0;
+
+  if (!imgReady) {
+    // ── 图片未加载：向量降级绘制 ──
+    _drawFallback(DW, DH);
+  } else if (openPx < 0.5) {
+    // ── 合拢状态：整张图直接绘制 ──
+    ctx.drawImage(scissorImg, -DW/2, -DH/2, DW, DH);
+  } else {
+    // ── 张开状态：左半(上叶)向负rx偏移，右半(下叶)向正rx偏移 ──
+
+    // 上叶片（rx 从 -DW/2 到 0，向上展开）
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(-DW/2 - 2, -DH/2 - 4, DW/2 + 4, DH + 8);
+    ctx.clip();
+    ctx.drawImage(scissorImg, -DW/2 - openPx, -DH/2, DW, DH);
+    ctx.restore();
+
+    // 下叶片（rx 从 0 到 DW/2，向下展开）
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(-2, -DH/2 - 4, DW/2 + 4, DH + 8);
+    ctx.clip();
+    ctx.drawImage(scissorImg, -DW/2 + openPx, -DH/2, DW, DH);
+    ctx.restore();
+  }
+
+  ctx.restore();
+
+  // 调试：中心点 + 速度向量
+  if (debug) {
+    ctx.save();
+    ctx.fillStyle = 'rgba(255, 60, 60, 0.9)';
+    ctx.beginPath();
+    ctx.arc(sc.x, sc.y, 4, 0, Math.PI*2);
+    ctx.fill();
+
+    ctx.strokeStyle = 'rgba(255, 60, 60, 0.7)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(sc.x, sc.y);
+    ctx.lineTo(sc.x, sc.y + sc.vy * 0.025);
+    ctx.stroke();
+    ctx.restore();
+  }
+}
+
+// 向量降级剪刀（图片加载失败时使用）
+function _drawFallback(DW, DH) {
+  const ang  = sc.openAmt * 0.30;   // 最大展开角 ≈ 17°
+  const bladeLen = DH * 0.72;
+  const handleR  = DW * 0.32;
+
+  // 上叶片
+  ctx.save();
+  ctx.rotate(-ang);
+  ctx.beginPath();
+  ctx.moveTo(0, 0);
+  ctx.lineTo(-bladeLen, -DW * 0.06);
+  ctx.lineTo(-bladeLen,  DW * 0.12);
+  ctx.lineTo(0, DW * 0.06);
+  ctx.closePath();
+  ctx.fillStyle = '#c8c8c8';
+  ctx.strokeStyle = '#666';
+  ctx.lineWidth = 1;
+  ctx.fill(); ctx.stroke();
+  ctx.beginPath();
+  ctx.ellipse(handleR, -handleR * 1.1, handleR, handleR * 0.75, -0.35, 0, Math.PI*2);
+  ctx.strokeStyle = '#888'; ctx.lineWidth = 2.5; ctx.stroke();
+  ctx.restore();
+
+  // 下叶片
+  ctx.save();
+  ctx.rotate(ang);
+  ctx.beginPath();
+  ctx.moveTo(0, 0);
+  ctx.lineTo(-bladeLen,  DW * 0.06);
+  ctx.lineTo(-bladeLen, -DW * 0.12);
+  ctx.lineTo(0, -DW * 0.06);
+  ctx.closePath();
+  ctx.fillStyle = '#d4d4d4';
+  ctx.strokeStyle = '#666';
+  ctx.lineWidth = 1;
+  ctx.fill(); ctx.stroke();
+  ctx.beginPath();
+  ctx.ellipse(handleR, handleR * 1.1, handleR, handleR * 0.75, 0.35, 0, Math.PI*2);
+  ctx.strokeStyle = '#888'; ctx.lineWidth = 2.5; ctx.stroke();
+  ctx.restore();
+
+  // 转轴螺丝
+  ctx.beginPath();
+  ctx.arc(0, 0, 4, 0, Math.PI*2);
+  ctx.fillStyle = '#aaa';  ctx.fill();
+  ctx.strokeStyle = '#666'; ctx.lineWidth = 1; ctx.stroke();
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  绘制：HUD（左下角按键状态 + 右上角调试数据）
+// ══════════════════════════════════════════════════════════════════
+function drawHUD() {
+  ctx.save();
+
+  // ── 左下角：按键指示器 ──
+  const bx = 12, by = H - 62, bw = 168, bh = 52;
+
+  // 背景
+  ctx.fillStyle = 'rgba(255,255,255,0.90)';
+  ctx.strokeStyle = '#ddd';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.roundRect(bx, by, bw, bh, 8);
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.font = '13px -apple-system, PingFang SC, sans-serif';
+
+  // SPACE 行
+  const spActive = keys.space;
+  ctx.fillStyle = spActive ? '#16a34a' : '#aaa';
+  ctx.textAlign = 'left';
+  ctx.fillText('↑ SPACE', bx + 10, by + 21);
+  if (spActive) {
+    // 推力条（绿色）
+    ctx.fillStyle = 'rgba(22,163,74,0.25)';
+    ctx.fillRect(bx + 86, by + 9, 72, 10);
+    ctx.fillStyle = '#16a34a';
+    ctx.fillRect(bx + 86, by + 9, 72, 10);
+  }
+
+  // J / 开合 行
+  ctx.fillStyle = sc.open ? '#d97706' : '#aaa';
+  ctx.fillText(`✂ J   ${sc.open ? '张开' : '合拢'}`, bx + 10, by + 43);
+
+  // ── 右上角：调试数值 ──
+  if (debug) {
+    ctx.textAlign = 'right';
+    ctx.font = 'bold 12px monospace';
+    ctx.fillStyle = 'rgba(0,0,0,0.78)';
+    const lines = [
+      `vy = ${sc.vy >= 0 ? '+' : ''}${sc.vy.toFixed(0).padStart(5)} px/s`,
+      ` x = ${sc.x.toFixed(0).padStart(6)} px`,
+      ` y = ${sc.y.toFixed(0).padStart(6)} px`,
+      `open = ${(sc.openAmt * 100).toFixed(0)}%`,
+    ];
+    lines.forEach((l, i) => ctx.fillText(l, W - 10, 18 + i * 18));
+  }
+
+  ctx.restore();
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  主渲染
+// ══════════════════════════════════════════════════════════════════
+function render() {
+  ctx.clearRect(0, 0, W, H);
+
+  // 1. 头部
+  drawHead();
+
+  // 2. 头发（裁剪到发梢以内，防止溢出）
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(0, 0, W, CYBT + 4);
+  ctx.clip();
+  drawBase();
+  [...strands]
+    .sort((a, b) => Math.abs(b.theta) - Math.abs(a.theta))
+    .forEach(s => { drawStrand(s); if (debug) drawDebugStrand(s); });
+  ctx.restore();
+
+  // 3. 剪刀（渲染在头发之上）
+  drawScissor();
+
+  // 4. HUD
+  drawHUD();
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  游戏循环
+// ══════════════════════════════════════════════════════════════════
+function loop(ts) {
+  if (lastTime === null) lastTime = ts;
+  const dt = Math.min((ts - lastTime) / 1000, 0.05);  // 最大 50ms，防止大帧跳变
+  lastTime = ts;
+
+  updatePhysics(dt);
+  render();
+  requestAnimationFrame(loop);
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  控件绑定
+// ══════════════════════════════════════════════════════════════════
+document.getElementById('btnReset').addEventListener('click', () => {
+  initStrands();
+  resetScissor();
+  lastTime = null;
+});
+document.getElementById('btnDbg').addEventListener('click', () => {
+  debug = !debug;
+});
+
+// ══════════════════════════════════════════════════════════════════
+//  启动
+// ══════════════════════════════════════════════════════════════════
+initStrands();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
