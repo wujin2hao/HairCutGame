@@ -108,10 +108,10 @@ NPC 入场后，手在脸侧上下移动若干次，含噪声：
 
 | 评分 | 表情（素材） |
 |------|------|
-| 三星 | 04.png |
-| 两星 | 01.png |
-| 一星 | 02.png |
-| 零星 | 03.png |
+| 三星 | "D:\HairCutGame\Assets\04.png" |
+| 两星 | "D:\HairCutGame\Assets\01.png" |
+| 一星 | "D:\HairCutGame\Assets\02.png" |
+| 零星 | "D:\HairCutGame\Assets\03.png" |
 
 ---
 
@@ -182,7 +182,7 @@ if 玩家剪的比期望短:
 
 ### 7.6 反馈呈现
 - **大字**：星级（主反馈）
-- **顾客表情动画**（情感反馈）
+- **顾客表情动画**:调取5.2 顾客反应中对应的美术素材（情感反馈）
 - **小字**（给硬核玩家）：长度偏差 X px / 不平整度 Y px
 
 ---
@@ -198,8 +198,8 @@ if 玩家剪的比期望短:
 ```javascript
 const CONFIG = {
   // 画布
-  canvasWidth: 960,
-  canvasHeight: 600,
+  canvasWidth: 1080,
+  canvasHeight: 720,
 
   // 物理（单位：像素 / 秒）
   gravity: 1500,           // px/s² 向下
