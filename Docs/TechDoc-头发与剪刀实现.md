@@ -89,13 +89,16 @@ fullEnd = (arcEnd.x, CYBT)
 椭圆脸 + 矩形脖颈 + 椭圆耳朵 + 五官。固定形状，不参与动态。
 
 ### 3.2 头发底色（drawBase）
-取 `pos = -0.5` 与 `pos = +0.5` 两根**无抖动**的"边界发丝"，将它们作为外轮廓闭合成一个块状区域，填充垂直方向的暗紫渐变：
+
+**v5**：取 `pos = -0.5` 与 `pos = +0.5` 两根**无抖动**的"边界发丝"作为左右轮廓，加 `CYBT` 横线封底，构成块状区域填充暗紫渐变：
 ```
 0%   #3e2153
 35%  #200f30
 100% #09060f
 ```
 这层是"头发体积"的视觉基础，避免发丝缝隙露出脸部底色。
+
+**v6 改动（路线 A）**：`drawBase()` 函数保留但**不再调用**。原因：底色块的下边界永远在 `CYBT`，发丝被切短后底色仍在，肉眼看不到切割效果。改为**纯发丝渲染**，靠下面 §3.6 的边缘填充发丝补齐侧边密度。
 
 ### 3.3 单根发丝（drawStrand）
 每根发丝绘制三件事：
@@ -111,6 +114,36 @@ strands.sort((a, b) => abs(b.theta) - abs(a.theta))
 
 ### 3.5 裁剪
 绘制头发前 `ctx.rect(0, 0, W, CYBT + 4); ctx.clip()`，避免发丝因 jitter 溢出到肩膀以下。
+
+### 3.6 边缘填充发丝（v6 新增）
+
+去掉 `drawBase` 后，主体 N=58 根发丝按 `pos = (i/(N-1)) - 0.5` 均匀排布，会在两侧出现**曲率断层**导致的视觉缝隙。
+
+**断层成因**：`theta = arcsin(2·|pos|)` 这个映射让 X 在 pos 上线性（发梢横向均匀），但 theta 在 pos 上非线性 —— `d(theta)/d(pos)` 在 |pos|→0.5 时趋向无穷。具体表现：
+
+| pos | theta | cpLen | arcEnd.x |
+|-----|-------|-------|----------|
+| 0.5    | 90°   | ≈64 | 416 |
+| 0.4825 | 75°   | ≈50 | 412 |
+| 0.4649 | 68.4° | ≈45 | 408 |
+
+主体最外两根（i=0 / i=57）X 只差 4px，但 cpLen 从 64 掉到 50，**最外那根弯得贴轮廓，紧邻的内侧那根曲率明显变浅**，看起来"突然变直"。
+
+**解法**：在 `theta = 78° / 82° / 86° / 90°` 各补一根**无 jitter** 发丝（每侧 4 根，总 8 根），bridge 主体最外的 75° 到轮廓的 90°，每档曲率差 ~3.5°，肉眼平滑。反推 pos：
+
+```javascript
+const EDGE_THETAS_DEG = [78, 82, 86, 90];
+EDGE_THETAS_DEG.forEach(deg => {
+  const theta = deg * Math.PI / 180;
+  [-1, +1].forEach(sign => {
+    const pos = sign * Math.sin(theta) / 2;   // pos = sin(theta)/2
+    const s = makeStrand(pos, false);          // 无 jitter
+    strands.push(_buildStrandState(s, { w: 6.5, hue: 265, ltop: 28, lbot: 6 }));
+  });
+});
+```
+
+边缘发丝宽度 6.5px（略粗），固定 hue 265 不抖动，z-order 靠 `sort by |theta|` 自动落在最底层（|theta|=π/2 最大），主体发丝盖在上面，看起来像主体的延伸而非新元素。
 
 ---
 
@@ -392,6 +425,9 @@ ARC_SAMPLES = 20         // 弧段采样段数（生成 21 个 {x,y,t} 点）
 bladeY      = sc.y       // 刀刃 Y
 bladeX0     = sc.x - SC_LEN/2   // 刀尖
 bladeX1     = sc.x              // 螺丝（刀刃右端）
+
+// v6 边缘填充发丝
+EDGE_THETAS_DEG = [78, 82, 86, 90]   // 每侧 4 根，无 jitter，宽 6.5px
 ```
 
 ## 附录 B · 关于 Bezier-Arc 近似公式
