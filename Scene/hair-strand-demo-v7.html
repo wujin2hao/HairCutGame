@@ -1,0 +1,937 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>剪刘海 · Step 4+5 · NPC 比划 + 设定虚线</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, 'PingFang SC', sans-serif;
+    background: #f6f1e8; min-height: 100vh;
+    display: flex; flex-direction: column;
+    align-items: center; padding: 28px 16px;
+  }
+  h1  { font-size: 20px; font-weight: 700; margin-bottom: 4px; color: #1a1a1a; }
+  .sub { color: #888; font-size: 13px; margin-bottom: 18px; }
+  .wrap {
+    background: #fff; border: 2px solid #1a1a1a; border-radius: 12px;
+    box-shadow: 5px 5px 0 #1a1a1a; overflow: hidden;
+  }
+  canvas { display: block; cursor: default; }
+  .ctrl {
+    margin-top: 14px; display: flex; gap: 10px;
+    flex-wrap: wrap; justify-content: center;
+  }
+  button {
+    font-family: inherit; font-size: 13px; padding: 9px 18px;
+    background: white; border: 2px solid #1a1a1a; border-radius: 8px;
+    cursor: pointer; box-shadow: 3px 3px 0 #1a1a1a;
+    transition: transform .08s, box-shadow .08s;
+  }
+  button:hover  { background: #fff8e8; }
+  button:active { transform: translate(2px,2px); box-shadow: 1px 1px 0 #1a1a1a; }
+  .key-hint {
+    margin-top: 10px; display: flex; gap: 24px;
+    justify-content: center; font-size: 13px; color: #555;
+  }
+  .key-hint span { display: flex; align-items: center; gap: 6px; }
+  kbd {
+    padding: 3px 8px; border: 2px solid #1a1a1a; border-radius: 5px;
+    box-shadow: 2px 2px 0 #1a1a1a; font-family: inherit; font-size: 12px;
+    background: #fff; font-weight: bold;
+  }
+  .info { margin-top: 10px; font-size: 12px; color: #888; text-align: center; line-height: 1.9; }
+</style>
+</head>
+<body>
+
+<h1>✂ 剪刘海 · Step 4+5 NPC 比划 + 设定虚线</h1>
+<p class="sub">状态机：GESTURING → SETTING_GUIDE → AIMING</p>
+
+<div class="wrap"><canvas id="c" width="600" height="520"></canvas></div>
+
+<div class="ctrl">
+  <button id="btnReset">🔄 重置</button>
+  <button id="btnDbg">🔵 调试</button>
+  <button id="btnSkip">⏭ 直接进切割</button>
+</div>
+<div class="key-hint">
+  <span>⬆ 抬升 <kbd>SPACE</kbd></span>
+  <span>✂ 闭合切割 <kbd>J</kbd></span>
+  <span>⏭ 跳过 <kbd>K</kbd></span>
+</div>
+<div class="info">
+  GESTURING：观看 NPC 比划想要的长度（真目标停留更久 + 微小点头）<br>
+  SETTING_GUIDE：拖动虚线到记忆位置，点击「确认」进入切割<br>
+  AIMING：剪刀自动从右向左推进，按 J 在刀刃位置切发丝
+</div>
+
+<script>
+// ══════════════════════════════════════════════════════════════════
+//  画布
+// ══════════════════════════════════════════════════════════════════
+const cv  = document.getElementById('c');
+const ctx = cv.getContext('2d');
+const W   = cv.width;   // 600
+const H   = cv.height;  // 520
+
+// ══════════════════════════════════════════════════════════════════
+//  头发参数
+// ══════════════════════════════════════════════════════════════════
+const R     = 116;
+const EXTRA = 62;
+const CX    = 300;
+const CY0   = 155;
+const CYB   = CY0 + R;       // 271
+const CYBT  = CYB + EXTRA;   // 333
+const N     = 58;
+const ARC_SAMPLES = 20;
+
+// 刘海 X 范围（用于虚线绘制和命中检测）
+const HAIR_LEFT_X  = 184;    // ≈ CX - R
+const HAIR_RIGHT_X = 416;    // ≈ CX + R
+
+// ══════════════════════════════════════════════════════════════════
+//  物理配置
+// ══════════════════════════════════════════════════════════════════
+const CONFIG = {
+  gravity:           1100,
+  thrustForce:       2400,
+  linearDrag:        2.0,
+  autoAdvanceSpeed:  75,
+  startX:  560,
+  startY:  230,
+  minY:     90,
+  maxY:    470,
+};
+
+// ══════════════════════════════════════════════════════════════════
+//  剪刀
+// ══════════════════════════════════════════════════════════════════
+const scissorImg = new Image();
+scissorImg.src   = '../Assets/jiandao.png';
+
+const SC_ORIG_W   = 130;
+const SC_ORIG_H   = 173;
+const SC_LEN      = 110;
+const SC_THICK    = Math.round(SC_ORIG_W / SC_ORIG_H * SC_LEN);
+const MAX_OPEN_PX = 14;
+
+// ══════════════════════════════════════════════════════════════════
+//  NPC 手（finger.png）— Step 4 比划
+// ══════════════════════════════════════════════════════════════════
+const handImg = new Image();
+handImg.src   = '../Assets/finger.png';
+
+const HAND_BASE_X            = 165;   // 手的水平位置（脸左侧），后续手调
+const HAND_SIZE              = 72;    // 显示尺寸
+const HAND_GESTURE_DURATION  = 4;     // 名义总时长（实际由序列长度决定）
+const HAND_TRANSITION_TIME   = 0.4;   // 位置间过渡时长（秒）
+const HAND_PAUSE_AFTER       = 0.5;   // 比划结束 → 进入 SETTING_GUIDE 的暂停
+const HAND_OFFSCREEN_Y       = H + 80;
+const FAKE_STOP_RANGE        = [0.3, 0.8];
+const REAL_STOP_RANGE        = [1.0, 1.5];
+const HAIR_TARGET_Y_MIN      = 240;   // 合理刘海长度的 Y 范围
+const HAIR_TARGET_Y_MAX      = 310;
+const NOD_AMPLITUDE          = 4;     // 真目标停留时手上下抖动幅度
+const NOD_FREQUENCY          = 4;     // Hz
+
+// ══════════════════════════════════════════════════════════════════
+//  虚线 / 确认按钮 — Step 5
+// ══════════════════════════════════════════════════════════════════
+const GUIDE_HIT_VERT      = 12;       // 拖动判定的纵向半径
+const GUIDE_X_PADDING     = 20;       // 命中区域左右各扩 N px
+const GUIDE_DEFAULT_Y     = H / 2;    // 进入 SETTING_GUIDE 时虚线初始 Y
+const CONFIRM_BTN         = { x: W/2 - 60, y: 470, w: 120, h: 36 };
+
+// ══════════════════════════════════════════════════════════════════
+//  剪刀淡入 — AIMING 进入时
+// ══════════════════════════════════════════════════════════════════
+const SCISSOR_FADE_IN_DUR = 0.5;
+
+// ══════════════════════════════════════════════════════════════════
+//  状态机
+// ══════════════════════════════════════════════════════════════════
+const STATE = {
+  GESTURING:     'GESTURING',
+  SETTING_GUIDE: 'SETTING_GUIDE',
+  AIMING:        'AIMING',
+};
+let currentState = null;
+
+// ══════════════════════════════════════════════════════════════════
+//  全局状态
+// ══════════════════════════════════════════════════════════════════
+let strands  = [];
+let debug    = false;
+let lastTime = null;
+
+const keys = { space: false };
+
+const sc = {
+  x:       CONFIG.startX,
+  y:       CONFIG.startY,
+  vy:      0,
+  open:    false,
+  openAmt: 0,
+};
+
+const game = {
+  targetY:      null,   // NPC 比划的真目标 Y（Step 6 评分用）
+  playerGuideY: null,   // 玩家在 SETTING_GUIDE 阶段确认的虚线 Y（Step 6 评分用）
+};
+
+// 比划状态
+const gesture = {
+  sequence:   [],         // [{ fromY, toY, holdDuration, isReal }]
+  index:      0,
+  phase:      'transition', // 'transition' | 'hold' | 'exiting' | 'paused'
+  phaseTime:  0,
+  handY:      HAND_OFFSCREEN_Y,
+  visible:    false,
+  exitFromY:  0,
+};
+
+// 虚线 + 拖动
+const guide = {
+  y:        GUIDE_DEFAULT_Y,
+  dragging: false,
+};
+
+// 剪刀淡入 alpha
+let scissorFadeIn = 0;
+
+// ══════════════════════════════════════════════════════════════════
+//  几何工具
+// ══════════════════════════════════════════════════════════════════
+function lerp(a, b, t) {
+  return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
+}
+function lerpScalar(a, b, t) { return a + (b - a) * t; }
+function clamp(v, lo, hi)    { return Math.max(lo, Math.min(hi, v)); }
+function easeInOut(t)        { return t < 0.5 ? 2*t*t : 1 - 2*(1-t)*(1-t); }
+function rand(lo, hi)        { return lo + Math.random() * (hi - lo); }
+
+function bezierAt(p0, p1, p2, p3, t) {
+  const u = 1 - t;
+  const uu = u * u, uuu = uu * u;
+  const tt = t * t, ttt = tt * t;
+  return {
+    x: uuu*p0.x + 3*uu*t*p1.x + 3*u*tt*p2.x + ttt*p3.x,
+    y: uuu*p0.y + 3*uu*t*p1.y + 3*u*tt*p2.y + ttt*p3.y,
+  };
+}
+
+function deCasteljauLeft(p0, p1, p2, p3, t) {
+  const q0 = lerp(p0, p1, t);
+  const q1 = lerp(p1, p2, t);
+  const q2 = lerp(p2, p3, t);
+  const r0 = lerp(q0, q1, t);
+  const r1 = lerp(q1, q2, t);
+  const s  = lerp(r0, r1, t);
+  return { q0, r0, s };
+}
+
+function canvasPos(e) {
+  const r = cv.getBoundingClientRect();
+  return { x: e.clientX - r.left, y: e.clientY - r.top };
+}
+function insideRect(x, y, r) {
+  return x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  状态：GESTURING
+// ══════════════════════════════════════════════════════════════════
+function buildGestureSequence() {
+  const fakesBefore = 1 + Math.floor(Math.random() * 2);   // 1~2
+  const fakesAfter  = Math.floor(Math.random() * 2);       // 0~1
+  const seq = [];
+  let lastY = HAND_OFFSCREEN_Y;
+
+  function pushStep(y, dur, isReal) {
+    seq.push({ fromY: lastY, toY: y, holdDuration: dur, isReal });
+    lastY = y;
+  }
+
+  for (let i = 0; i < fakesBefore; i++) {
+    pushStep(rand(HAIR_TARGET_Y_MIN, HAIR_TARGET_Y_MAX), rand(...FAKE_STOP_RANGE), false);
+  }
+  const realY = rand(HAIR_TARGET_Y_MIN, HAIR_TARGET_Y_MAX);
+  pushStep(realY, rand(...REAL_STOP_RANGE), true);
+  for (let i = 0; i < fakesAfter; i++) {
+    pushStep(rand(HAIR_TARGET_Y_MIN, HAIR_TARGET_Y_MAX), rand(...FAKE_STOP_RANGE), false);
+  }
+
+  game.targetY = realY;
+  return seq;
+}
+
+const stateGesturing = {
+  enter() {
+    gesture.sequence  = buildGestureSequence();
+    gesture.index     = 0;
+    gesture.phase     = 'transition';
+    gesture.phaseTime = 0;
+    gesture.handY     = HAND_OFFSCREEN_Y;
+    gesture.visible   = true;
+  },
+  update(dt) {
+    gesture.phaseTime += dt;
+
+    if (gesture.index < gesture.sequence.length) {
+      const step = gesture.sequence[gesture.index];
+
+      if (gesture.phase === 'transition') {
+        const t = clamp(gesture.phaseTime / HAND_TRANSITION_TIME, 0, 1);
+        gesture.handY = lerpScalar(step.fromY, step.toY, easeInOut(t));
+        if (t >= 1) { gesture.phase = 'hold'; gesture.phaseTime = 0; }
+      } else if (gesture.phase === 'hold') {
+        if (step.isReal) {
+          gesture.handY = step.toY + Math.sin(gesture.phaseTime * Math.PI * 2 * NOD_FREQUENCY) * NOD_AMPLITUDE;
+        } else {
+          gesture.handY = step.toY;
+        }
+        if (gesture.phaseTime >= step.holdDuration) {
+          gesture.index++;
+          gesture.phase = 'transition';
+          gesture.phaseTime = 0;
+        }
+      }
+    } else {
+      // 序列走完：手退场 → 暂停 → 进 SETTING_GUIDE
+      if (gesture.phase !== 'exiting' && gesture.phase !== 'paused') {
+        gesture.phase = 'exiting';
+        gesture.phaseTime = 0;
+        gesture.exitFromY = gesture.handY;
+      }
+      if (gesture.phase === 'exiting') {
+        const t = clamp(gesture.phaseTime / HAND_TRANSITION_TIME, 0, 1);
+        gesture.handY = lerpScalar(gesture.exitFromY, HAND_OFFSCREEN_Y, easeInOut(t));
+        if (t >= 1) {
+          gesture.visible = false;
+          gesture.phase = 'paused';
+          gesture.phaseTime = 0;
+        }
+      } else if (gesture.phase === 'paused') {
+        if (gesture.phaseTime >= HAND_PAUSE_AFTER) {
+          transitionTo(STATE.SETTING_GUIDE);
+        }
+      }
+    }
+  },
+  exit() { gesture.visible = false; },
+  handleInput(e) { /* 屏蔽所有输入 */ },
+};
+
+// ══════════════════════════════════════════════════════════════════
+//  状态：SETTING_GUIDE
+// ══════════════════════════════════════════════════════════════════
+const stateSettingGuide = {
+  enter() {
+    guide.y = GUIDE_DEFAULT_Y;
+    guide.dragging = false;
+  },
+  update(dt) { /* 静态状态 */ },
+  exit() { guide.dragging = false; },
+  handleInput(e) {
+    if (e.type === 'mousedown') {
+      const { x, y } = canvasPos(e);
+      // 优先判定按钮
+      if (insideRect(x, y, CONFIRM_BTN)) {
+        game.playerGuideY = guide.y;
+        transitionTo(STATE.AIMING);
+        return;
+      }
+      // 虚线命中：纵向 ±GUIDE_HIT_VERT，横向限定在刘海范围
+      if (Math.abs(y - guide.y) <= GUIDE_HIT_VERT &&
+          x >= HAIR_LEFT_X - GUIDE_X_PADDING &&
+          x <= HAIR_RIGHT_X + GUIDE_X_PADDING) {
+        guide.dragging = true;
+      }
+    } else if (e.type === 'mousemove' && guide.dragging) {
+      const { y } = canvasPos(e);
+      // 限定虚线在刘海可见范围内（不能拖到头顶上方或脸下方）
+      guide.y = clamp(y, CY0 + 20, CYBT + 20);
+    } else if (e.type === 'mouseup') {
+      guide.dragging = false;
+    }
+  },
+};
+
+// ══════════════════════════════════════════════════════════════════
+//  状态：AIMING
+// ══════════════════════════════════════════════════════════════════
+const stateAiming = {
+  enter() {
+    resetScissor();
+    scissorFadeIn = 0;
+  },
+  update(dt) {
+    if (scissorFadeIn < 1) scissorFadeIn = Math.min(1, scissorFadeIn + dt / SCISSOR_FADE_IN_DUR);
+    updatePhysics(dt);
+  },
+  exit() {},
+  handleInput(e) {
+    if (e.type === 'keydown') {
+      if (e.code === 'Space') { e.preventDefault(); keys.space = true; }
+      if (e.code === 'KeyJ' && !e.repeat) {
+        sc.open = !sc.open;
+        performCut();
+      }
+    } else if (e.type === 'keyup') {
+      if (e.code === 'Space') keys.space = false;
+    } else if (e.type === 'mousedown') {
+      sc.open = !sc.open;
+      performCut();
+    }
+  },
+};
+
+const states = {
+  [STATE.GESTURING]:     stateGesturing,
+  [STATE.SETTING_GUIDE]: stateSettingGuide,
+  [STATE.AIMING]:        stateAiming,
+};
+
+function transitionTo(next) {
+  if (currentState && states[currentState].exit) states[currentState].exit();
+  currentState = next;
+  if (states[next].enter) states[next].enter();
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  全局输入分发
+// ══════════════════════════════════════════════════════════════════
+document.addEventListener('keydown', e => {
+  // 全局：K = 跳过到 AIMING
+  if (e.code === 'KeyK' && !e.repeat &&
+      (currentState === STATE.GESTURING || currentState === STATE.SETTING_GUIDE)) {
+    if (currentState === STATE.GESTURING && game.targetY === null) {
+      game.targetY = rand(HAIR_TARGET_Y_MIN, HAIR_TARGET_Y_MAX);
+    }
+    if (game.playerGuideY === null) game.playerGuideY = guide.y;
+    transitionTo(STATE.AIMING);
+    return;
+  }
+  states[currentState]?.handleInput?.(e);
+});
+document.addEventListener('keyup',   e => states[currentState]?.handleInput?.(e));
+cv.addEventListener('mousedown',     e => { e.preventDefault(); states[currentState]?.handleInput?.(e); });
+cv.addEventListener('mousemove',     e => states[currentState]?.handleInput?.(e));
+cv.addEventListener('mouseup',       e => states[currentState]?.handleInput?.(e));
+
+// ══════════════════════════════════════════════════════════════════
+//  剪刀物理（仅 AIMING 状态调用）
+// ══════════════════════════════════════════════════════════════════
+function updatePhysics(dt) {
+  sc.vy += CONFIG.gravity * dt;
+  if (keys.space) sc.vy -= CONFIG.thrustForce * dt;
+  sc.vy *= Math.exp(-CONFIG.linearDrag * dt);
+  sc.x  -= CONFIG.autoAdvanceSpeed * dt;
+  sc.y  += sc.vy * dt;
+
+  if (sc.y < CONFIG.minY) { sc.y = CONFIG.minY; sc.vy = Math.max(0, sc.vy); }
+  if (sc.y > CONFIG.maxY) { sc.y = CONFIG.maxY; sc.vy = Math.min(0, sc.vy); }
+
+  sc.openAmt += ((sc.open ? 1 : 0) - sc.openAmt) * Math.min(1, dt * 20);
+
+  if (sc.x < -SC_LEN) resetGame();
+}
+
+function resetScissor() {
+  sc.x = CONFIG.startX; sc.y = CONFIG.startY;
+  sc.vy = 0; sc.open = false; sc.openAmt = 0;
+}
+
+function resetGame() {
+  initStrands();
+  resetScissor();
+  game.targetY = null;
+  game.playerGuideY = null;
+  guide.y = GUIDE_DEFAULT_Y;
+  guide.dragging = false;
+  lastTime = null;
+  transitionTo(STATE.GESTURING);
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  发丝生成（与 v6 一致）
+// ══════════════════════════════════════════════════════════════════
+function makeStrand(pos, jitter = true) {
+  const theta = pos === 0 ? 0
+    : Math.sign(pos) * Math.asin(Math.min(0.9999, Math.abs(pos) * 2));
+  const cpLen = (4/3) * R * Math.tan(Math.abs(theta) / 4);
+  const jx = jitter ? (Math.random() - 0.5) * 2.5 : 0;
+  const jy = jitter ? (Math.random() - 0.5) * 2   : 0;
+  const p0      = { x: CX + (jitter ? (Math.random()-0.5)*3 : 0), y: CY0 };
+  const arcEnd  = { x: CX + Math.sin(theta)*R + jx, y: CYB + jy };
+  const p1      = { x: p0.x + Math.sin(theta)*cpLen, y: p0.y + Math.cos(theta)*cpLen };
+  const p2      = { x: arcEnd.x, y: arcEnd.y - cpLen };
+  const fullEnd = { x: arcEnd.x, y: CYBT + jy };
+
+  const samples = [];
+  for (let i = 0; i <= ARC_SAMPLES; i++) {
+    const t = i / ARC_SAMPLES;
+    const pt = bezierAt(p0, p1, p2, arcEnd, t);
+    samples.push({ x: pt.x, y: pt.y, t });
+  }
+
+  return { p0, p1, p2, arcEnd, fullEnd, theta, cpLen, samples };
+}
+
+function initStrands() {
+  strands = [];
+  for (let i = 0; i < N; i++) {
+    const s = makeStrand((i / (N-1)) - 0.5, true);
+    strands.push(_buildStrandState(s, {
+      w:    5   + Math.random() * 2.5,
+      hue:  265 + (Math.random() - 0.5) * 16,
+      ltop: 28  + (Math.random() - 0.5) * 5,
+      lbot: 6   + (Math.random() - 0.5) * 3,
+    }));
+  }
+  const EDGE_THETAS_DEG = [78, 82, 86, 90];
+  EDGE_THETAS_DEG.forEach(deg => {
+    const theta = deg * Math.PI / 180;
+    [-1, +1].forEach(sign => {
+      const pos = sign * Math.sin(theta) / 2;
+      const s = makeStrand(pos, false);
+      strands.push(_buildStrandState(s, { w: 6.5, hue: 265, ltop: 28, lbot: 6 }));
+    });
+  });
+}
+
+function _buildStrandState(s, vis) {
+  return { ...s, ...vis,
+    endY: s.fullEnd.y, cutInArc: false, cutP1: null, cutP2: null, cutEnd: null };
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  切割（与 v6 一致）
+// ══════════════════════════════════════════════════════════════════
+function performCut() {
+  const bladeX0 = sc.x - SC_LEN / 2;
+  const bladeX1 = sc.x;
+  const bladeY  = sc.y;
+
+  for (const s of strands) {
+    const tipX = s.arcEnd.x;
+    if (tipX < bladeX0 || tipX > bladeX1) continue;
+    const currentEndY = s.cutInArc ? s.cutEnd.y : s.endY;
+    if (bladeY >= currentEndY) continue;
+
+    if (bladeY >= s.arcEnd.y) {
+      s.endY = bladeY;
+    } else {
+      let tCut = null;
+      for (let i = 0; i < s.samples.length - 1; i++) {
+        const a = s.samples[i], b = s.samples[i + 1];
+        if (a.y <= bladeY && b.y >= bladeY && a.y !== b.y) {
+          const u = (bladeY - a.y) / (b.y - a.y);
+          tCut = a.t + (b.t - a.t) * u;
+          break;
+        }
+      }
+      if (tCut === null) continue;
+      if (s.cutInArc && bladeY >= s.cutEnd.y) continue;
+
+      const { q0, r0, s: cutPt } = deCasteljauLeft(s.p0, s.p1, s.p2, s.arcEnd, tCut);
+      s.cutInArc = true;
+      s.cutP1 = q0; s.cutP2 = r0; s.cutEnd = cutPt;
+    }
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  绘制：头部（与 v6 一致）
+// ══════════════════════════════════════════════════════════════════
+function drawHead() {
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = '#1a1a1a';
+
+  ctx.fillStyle = '#fffbf4';
+  ctx.beginPath();
+  ctx.moveTo(225,392); ctx.lineTo(225,432); ctx.lineTo(145,515);
+  ctx.lineTo(455,515); ctx.lineTo(375,432); ctx.lineTo(375,392);
+  ctx.closePath(); ctx.fill(); ctx.stroke();
+
+  ctx.fillStyle = '#fff7ec';
+  ctx.beginPath();
+  ctx.ellipse(300, 328, 102, 108, 0, 0, Math.PI*2);
+  ctx.fill(); ctx.stroke();
+
+  [[-103, 10], [103, 10]].forEach(([dx, dy]) => {
+    ctx.beginPath();
+    ctx.ellipse(300+dx, 328+dy, 15, 21, 0, 0, Math.PI*2);
+    ctx.fill(); ctx.stroke();
+  });
+
+  ctx.globalAlpha = 0.6;
+  ctx.fillStyle = '#f7c0c0';
+  ctx.beginPath(); ctx.ellipse(252, 352, 19, 12, 0, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(348, 352, 19, 12, 0, 0, Math.PI*2); ctx.fill();
+  ctx.globalAlpha = 1;
+
+  ctx.fillStyle = '#1a1a1a';
+  [[273, 313], [327, 313]].forEach(([x, y]) => {
+    ctx.beginPath(); ctx.ellipse(x, y, 8, 11, 0, 0, Math.PI*2); ctx.fill();
+  });
+
+  ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(300, 362, 9, 0, Math.PI); ctx.stroke();
+
+  ctx.fillStyle = '#1a1a1a';
+  ctx.beginPath(); ctx.arc(300, 340, 2, 0, Math.PI*2); ctx.fill();
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  绘制：发丝（与 v6 一致）
+// ══════════════════════════════════════════════════════════════════
+function drawStrand(s) {
+  const endX = s.cutInArc ? s.cutEnd.x : s.arcEnd.x;
+  const endY = s.cutInArc ? s.cutEnd.y : s.endY;
+
+  const grad = ctx.createLinearGradient(s.p0.x, s.p0.y, endX, endY);
+  grad.addColorStop(0,    `hsl(${s.hue},26%,${s.ltop}%)`);
+  grad.addColorStop(0.45, `hsl(${s.hue},34%,${(s.ltop+s.lbot)/2}%)`);
+  grad.addColorStop(1,    `hsl(${s.hue},44%,${s.lbot}%)`);
+
+  ctx.beginPath();
+  ctx.moveTo(s.p0.x, s.p0.y);
+  if (s.cutInArc) {
+    ctx.bezierCurveTo(s.cutP1.x, s.cutP1.y, s.cutP2.x, s.cutP2.y, s.cutEnd.x, s.cutEnd.y);
+  } else {
+    ctx.bezierCurveTo(s.p1.x, s.p1.y, s.p2.x, s.p2.y, s.arcEnd.x, s.arcEnd.y);
+    ctx.lineTo(s.arcEnd.x, s.endY);
+  }
+  ctx.strokeStyle = grad;
+  ctx.lineWidth   = s.w;
+  ctx.lineCap     = 'round';
+  ctx.stroke();
+}
+
+function drawDebugStrand(s) {
+  ctx.save();
+  ctx.fillStyle = 'rgba(50,120,255,0.6)';
+  for (const p of s.samples) {
+    ctx.beginPath(); ctx.arc(p.x, p.y, 1.6, 0, Math.PI*2); ctx.fill();
+  }
+  if (s.cutInArc) {
+    ctx.beginPath(); ctx.arc(s.cutEnd.x, s.cutEnd.y, 4, 0, Math.PI*2);
+    ctx.fillStyle = 'rgba(220,50,50,0.85)'; ctx.fill();
+  }
+  ctx.restore();
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  绘制：剪刀（与 v6 一致，加 fade-in alpha）
+// ══════════════════════════════════════════════════════════════════
+function drawScissor() {
+  const DW = SC_THICK;
+  const DH = SC_LEN;
+  const openPx = sc.openAmt * MAX_OPEN_PX;
+
+  ctx.save();
+  ctx.globalAlpha = scissorFadeIn;
+  ctx.translate(sc.x, sc.y);
+  ctx.rotate(Math.PI / 2);
+
+  const imgReady = scissorImg.complete && scissorImg.naturalWidth > 0;
+
+  if (!imgReady) {
+    _drawFallback(DW, DH);
+  } else if (openPx < 0.5) {
+    ctx.drawImage(scissorImg, -DW/2, -DH/2, DW, DH);
+  } else {
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(-DW/2 - 2, -DH/2 - 4, DW/2 + 4, DH + 8);
+    ctx.clip();
+    ctx.drawImage(scissorImg, -DW/2 - openPx, -DH/2, DW, DH);
+    ctx.restore();
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(-2, -DH/2 - 4, DW/2 + 4, DH + 8);
+    ctx.clip();
+    ctx.drawImage(scissorImg, -DW/2 + openPx, -DH/2, DW, DH);
+    ctx.restore();
+  }
+  ctx.restore();
+
+  if (debug) {
+    ctx.save();
+    ctx.fillStyle = 'rgba(255, 60, 60, 0.9)';
+    ctx.beginPath(); ctx.arc(sc.x, sc.y, 4, 0, Math.PI*2); ctx.fill();
+
+    ctx.strokeStyle = 'rgba(255, 60, 60, 0.7)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(sc.x, sc.y);
+    ctx.lineTo(sc.x, sc.y + sc.vy * 0.025);
+    ctx.stroke();
+
+    ctx.strokeStyle = 'rgba(22,163,74,0.85)';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([4, 3]);
+    ctx.beginPath();
+    ctx.moveTo(sc.x - SC_LEN/2, sc.y);
+    ctx.lineTo(sc.x,            sc.y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
+  }
+}
+
+function _drawFallback(DW, DH) {
+  const ang  = sc.openAmt * 0.30;
+  const bladeLen = DH * 0.72;
+  const handleR  = DW * 0.32;
+
+  ctx.save();
+  ctx.rotate(-ang);
+  ctx.beginPath();
+  ctx.moveTo(0, 0); ctx.lineTo(-bladeLen, -DW * 0.06);
+  ctx.lineTo(-bladeLen, DW * 0.12); ctx.lineTo(0, DW * 0.06);
+  ctx.closePath();
+  ctx.fillStyle = '#c8c8c8'; ctx.strokeStyle = '#666'; ctx.lineWidth = 1;
+  ctx.fill(); ctx.stroke();
+  ctx.beginPath();
+  ctx.ellipse(handleR, -handleR * 1.1, handleR, handleR * 0.75, -0.35, 0, Math.PI*2);
+  ctx.strokeStyle = '#888'; ctx.lineWidth = 2.5; ctx.stroke();
+  ctx.restore();
+
+  ctx.save();
+  ctx.rotate(ang);
+  ctx.beginPath();
+  ctx.moveTo(0, 0); ctx.lineTo(-bladeLen, DW * 0.06);
+  ctx.lineTo(-bladeLen, -DW * 0.12); ctx.lineTo(0, -DW * 0.06);
+  ctx.closePath();
+  ctx.fillStyle = '#d4d4d4'; ctx.strokeStyle = '#666'; ctx.lineWidth = 1;
+  ctx.fill(); ctx.stroke();
+  ctx.beginPath();
+  ctx.ellipse(handleR, handleR * 1.1, handleR, handleR * 0.75, 0.35, 0, Math.PI*2);
+  ctx.strokeStyle = '#888'; ctx.lineWidth = 2.5; ctx.stroke();
+  ctx.restore();
+
+  ctx.beginPath();
+  ctx.arc(0, 0, 4, 0, Math.PI*2);
+  ctx.fillStyle = '#aaa'; ctx.fill();
+  ctx.strokeStyle = '#666'; ctx.lineWidth = 1; ctx.stroke();
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  绘制：NPC 手 — Step 4
+// ══════════════════════════════════════════════════════════════════
+function drawHand() {
+  if (!gesture.visible) return;
+  const ready = handImg.complete && handImg.naturalWidth > 0;
+  if (!ready) {
+    // fallback：画一个圆点占位
+    ctx.fillStyle = '#f7c0c0';
+    ctx.beginPath();
+    ctx.arc(HAND_BASE_X, gesture.handY, 22, 0, Math.PI*2);
+    ctx.fill();
+    return;
+  }
+  const w = HAND_SIZE;
+  const h = HAND_SIZE * (handImg.naturalHeight / handImg.naturalWidth);
+  ctx.drawImage(handImg, HAND_BASE_X - w/2, gesture.handY - h/2, w, h);
+
+  // 调试：真目标 Y 标线
+  if (debug && game.targetY !== null) {
+    ctx.save();
+    ctx.strokeStyle = 'rgba(220,160,50,0.85)';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([6, 4]);
+    ctx.beginPath();
+    ctx.moveTo(60, game.targetY);
+    ctx.lineTo(W - 60, game.targetY);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = 'rgba(220,160,50,0.85)';
+    ctx.font = 'bold 11px monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText(`目标 Y = ${game.targetY.toFixed(0)}`, 64, game.targetY - 4);
+    ctx.restore();
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  绘制：参考虚线 — Step 5
+// ══════════════════════════════════════════════════════════════════
+function drawGuideLine(alpha) {
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.strokeStyle = '#d04545';
+  ctx.lineWidth = 2;
+  ctx.setLineDash([8, 6]);
+  ctx.beginPath();
+  ctx.moveTo(HAIR_LEFT_X - 10,  guide.y);
+  ctx.lineTo(HAIR_RIGHT_X + 10, guide.y);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // 拖动状态时显示一个把手
+  if (currentState === STATE.SETTING_GUIDE) {
+    ctx.fillStyle = '#d04545';
+    ctx.beginPath();
+    ctx.arc(HAIR_RIGHT_X + 18, guide.y, 5, 0, Math.PI*2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  绘制：确认按钮 — Step 5
+// ══════════════════════════════════════════════════════════════════
+function drawConfirmButton() {
+  const r = CONFIRM_BTN;
+  ctx.save();
+
+  // 阴影
+  ctx.fillStyle = 'rgba(0,0,0,0.18)';
+  ctx.fillRect(r.x + 3, r.y + 3, r.w, r.h);
+
+  // 按钮主体
+  ctx.fillStyle = '#fff';
+  ctx.strokeStyle = '#1a1a1a';
+  ctx.lineWidth = 2;
+  ctx.fillRect(r.x, r.y, r.w, r.h);
+  ctx.strokeRect(r.x, r.y, r.w, r.h);
+
+  ctx.fillStyle = '#1a1a1a';
+  ctx.font = 'bold 14px -apple-system, PingFang SC, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('✓ 确认', r.x + r.w/2, r.y + r.h/2);
+
+  ctx.restore();
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  绘制：HUD
+// ══════════════════════════════════════════════════════════════════
+function drawHUD() {
+  ctx.save();
+  ctx.font = '12px -apple-system, PingFang SC, sans-serif';
+  ctx.textAlign = 'left';
+
+  // 左上角：当前状态
+  ctx.fillStyle = 'rgba(0,0,0,0.6)';
+  ctx.fillText(`STATE: ${currentState}`, 10, 18);
+
+  // 左下角：按键状态（仅 AIMING）
+  if (currentState === STATE.AIMING) {
+    const bx = 12, by = H - 62, bw = 168, bh = 52;
+    ctx.fillStyle = 'rgba(255,255,255,0.90)';
+    ctx.strokeStyle = '#ddd'; ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.roundRect(bx, by, bw, bh, 8);
+    ctx.fill(); ctx.stroke();
+
+    ctx.font = '13px -apple-system, PingFang SC, sans-serif';
+    const spActive = keys.space;
+    ctx.fillStyle = spActive ? '#16a34a' : '#aaa';
+    ctx.fillText('↑ SPACE', bx + 10, by + 21);
+    if (spActive) {
+      ctx.fillStyle = 'rgba(22,163,74,0.25)';
+      ctx.fillRect(bx + 86, by + 9, 72, 10);
+      ctx.fillStyle = '#16a34a';
+      ctx.fillRect(bx + 86, by + 9, 72, 10);
+    }
+    ctx.fillStyle = sc.open ? '#d97706' : '#aaa';
+    ctx.fillText(`✂ J   ${sc.open ? '张开' : '合拢'}`, bx + 10, by + 43);
+  }
+
+  // 右上角：调试数据
+  if (debug) {
+    ctx.textAlign = 'right';
+    ctx.font = 'bold 12px monospace';
+    ctx.fillStyle = 'rgba(0,0,0,0.78)';
+    const lines = [
+      `targetY      = ${game.targetY     === null ? '—' : game.targetY.toFixed(0)}`,
+      `playerGuideY = ${game.playerGuideY === null ? '—' : game.playerGuideY.toFixed(0)}`,
+      `guide.y      = ${guide.y.toFixed(0)}`,
+    ];
+    if (currentState === STATE.AIMING) {
+      const cutCount = strands.filter(s => s.cutInArc || s.endY < s.fullEnd.y).length;
+      lines.push('');
+      lines.push(`vy = ${sc.vy >= 0 ? '+' : ''}${sc.vy.toFixed(0).padStart(5)} px/s`);
+      lines.push(` y = ${sc.y.toFixed(0).padStart(6)}`);
+      lines.push(`cut = ${cutCount}/${N}`);
+    }
+    lines.forEach((l, i) => ctx.fillText(l, W - 10, 18 + i * 16));
+  }
+  ctx.restore();
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  主渲染（按状态分层）
+// ══════════════════════════════════════════════════════════════════
+function render() {
+  ctx.clearRect(0, 0, W, H);
+
+  // 公共底层
+  drawHead();
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(0, 0, W, CYBT + 4);
+  ctx.clip();
+  [...strands]
+    .sort((a, b) => Math.abs(b.theta) - Math.abs(a.theta))
+    .forEach(s => { drawStrand(s); if (debug) drawDebugStrand(s); });
+  ctx.restore();
+
+  // 按状态分层
+  if (currentState === STATE.GESTURING) {
+    drawHand();
+  } else if (currentState === STATE.SETTING_GUIDE) {
+    drawGuideLine(1.0);
+    drawConfirmButton();
+  } else if (currentState === STATE.AIMING) {
+    if (game.playerGuideY !== null) drawGuideLine(0.30);
+    drawScissor();
+  }
+
+  drawHUD();
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  游戏循环
+// ══════════════════════════════════════════════════════════════════
+function loop(ts) {
+  if (lastTime === null) lastTime = ts;
+  const dt = Math.min((ts - lastTime) / 1000, 0.05);
+  lastTime = ts;
+
+  states[currentState]?.update?.(dt);
+  render();
+  requestAnimationFrame(loop);
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  控件
+// ══════════════════════════════════════════════════════════════════
+document.getElementById('btnReset').addEventListener('click', resetGame);
+document.getElementById('btnDbg').addEventListener('click', () => { debug = !debug; });
+document.getElementById('btnSkip').addEventListener('click', () => {
+  if (currentState === STATE.GESTURING || currentState === STATE.SETTING_GUIDE) {
+    if (currentState === STATE.GESTURING && game.targetY === null) {
+      game.targetY = rand(HAIR_TARGET_Y_MIN, HAIR_TARGET_Y_MAX);
+    }
+    if (game.playerGuideY === null) game.playerGuideY = guide.y;
+    transitionTo(STATE.AIMING);
+  }
+});
+
+// ══════════════════════════════════════════════════════════════════
+//  启动
+// ══════════════════════════════════════════════════════════════════
+initStrands();
+transitionTo(STATE.GESTURING);
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

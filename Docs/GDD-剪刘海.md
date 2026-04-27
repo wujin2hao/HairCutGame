@@ -3,10 +3,11 @@
 > 一款 2D 物理操作类小游戏，玩家扮演理发师，操控一把受重力影响的剪刀，按顾客比划的长度剪出整齐的刘海。
 
 **关联文档**
-- 技术实现：[TechDoc-头发与剪刀实现.md](TechDoc-头发与剪刀实现.md) — 头发几何、剪刀渲染、物理积分、切割实现的细节
+- 技术实现：[TechDoc-头发与剪刀实现.md](TechDoc-头发与剪刀实现.md) — 头发几何、剪刀渲染、物理积分、切割实现、状态机与游戏流程的细节
 - Demo 进度：
   - Step 1 剪刀手感 → [`Scene/hair-strand-demo-v5.html`](../Scene/hair-strand-demo-v5.html)
   - Step 2 头发切割 → [`Scene/hair-strand-demo-v6.html`](../Scene/hair-strand-demo-v6.html)
+  - Step 4+5 状态机 + NPC 比划 + 设定虚线 → [`Scene/hair-strand-demo-v7.html`](../Scene/hair-strand-demo-v7.html)
 
 ---
 
@@ -106,6 +107,8 @@ NPC 用手比划想要的长度（含噪声 — 多次停留位置）
 
 ## 五、NPC 比划机制
 
+> 实现见 [TechDoc §8.2 GESTURING：NPC 比划](TechDoc-头发与剪刀实现.md#82-gesturingnpc-比划)（v7 已实现，使用 `Assets/finger.png` 作为手图）
+
 ### 5.1 比划过程
 NPC 入场后，手在脸侧上下移动若干次，含噪声：
 
@@ -128,6 +131,8 @@ NPC 入场后，手在脸侧上下移动若干次，含噪声：
 ---
 
 ## 六、玩家辅助系统：参考虚线
+
+> 实现见 [TechDoc §8.3 SETTING_GUIDE：拖动虚线 + 确认按钮](TechDoc-头发与剪刀实现.md#83-setting_guide拖动虚线--确认按钮)（v7 已实现，确认按钮 canvas 内绘制）
 
 ### 6.1 设定阶段
 NPC 比划完成后，进入"设定虚线"阶段：

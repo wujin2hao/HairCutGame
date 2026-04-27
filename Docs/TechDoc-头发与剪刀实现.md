@@ -2,11 +2,12 @@
 
 > 配套实现：
 > - [`Scene/hair-strand-demo-v5.html`](../Scene/hair-strand-demo-v5.html) — Step 1 剪刀手感
-> - [`Scene/hair-strand-demo-v6.html`](../Scene/hair-strand-demo-v6.html) — Step 2 头发切割（在 v5 基础上增加切割）
+> - [`Scene/hair-strand-demo-v6.html`](../Scene/hair-strand-demo-v6.html) — Step 2 头发切割
+> - [`Scene/hair-strand-demo-v7.html`](../Scene/hair-strand-demo-v7.html) — Step 4+5 状态机 + NPC 比划 + 设定虚线
 >
 > 关联设计：[`Docs/GDD-剪刘海.md`](GDD-剪刘海.md)
 
-本文档说明 demo 中的核心技术点：**头发几何与渲染**、**剪刀图像旋转与开合动画**、**剪刀物理积分**、**头发切割（v6 新增）**。评分、NPC 比划等后续阶段不展开。
+本文档说明 demo 中的核心技术点：**头发几何与渲染**、**剪刀图像旋转与开合动画**、**剪刀物理积分**、**头发切割（v6）**、**状态机与游戏流程（v7）**。评分等后续阶段不展开。
 
 ---
 
@@ -287,6 +288,8 @@ const dt = Math.min((ts - lastTime) / 1000, 0.05);
 
 > v6 的 J `keydown` 监听加了 `!e.repeat` 守卫，长按只触发一次切割，避免连发。
 
+**v7 改动**：所有事件先到全局 dispatcher，再 route 到 `states[currentState].handleInput(e)`。AIMING 之外的状态会忽略 Space/J/canvas 鼠标点击。详见 §8.5。
+
 ---
 
 ## 七、头发切割（v6 新增）
@@ -391,16 +394,124 @@ if (cutInArc) {
 
 ---
 
-## 八、待实现部分（v6 之后）
+## 八、状态机与游戏流程（v7 新增）
 
-GDD 第十章开发优先级里，v5 完成第 1 项（剪刀手感），v6 完成第 2 项（头发切割机制）。后续：
+v7 引入显式状态机，把 v5/v6 的"剪刀世界"包成 `AIMING` 状态，前面接两个新状态：
+
+```
+GESTURING（NPC 比划，玩家观看）
+   ↓ 自动衔接（手退场 + 0.5s 暂停）
+SETTING_GUIDE（玩家拖动虚线）
+   ↓ 点击「确认」按钮
+AIMING（玩家操作剪刀切割，沿用 v6）
+```
+
+### 8.1 状态机骨架
+
+每个状态是一个对象，含可选的 `enter / update / exit / handleInput`：
+
+```javascript
+const STATE = { GESTURING, SETTING_GUIDE, AIMING };
+const states = { [STATE.GESTURING]: stateGesturing, ... };
+
+function transitionTo(next) {
+  if (currentState && states[currentState].exit) states[currentState].exit();
+  currentState = next;
+  if (states[next].enter) states[next].enter();
+}
+```
+
+主循环只调当前状态的 `update(dt)`，事件分发只调 `handleInput(e)`，这样物理积分 / 输入响应自动按状态隔离。
+
+### 8.2 GESTURING：NPC 比划
+
+**生成阶段**（`buildGestureSequence`，在 `enter` 时调用一次）：
+
+| 段 | 数量 | 停留时长 | 标记 |
+|----|------|----------|------|
+| 干扰停留 | 1~2 个 | 0.3~0.8s | `isReal=false` |
+| **真目标** | 1 个 | **1.0~1.5s** | `isReal=true` |
+| 干扰停留 | 0~1 个 | 0.3~0.8s | `isReal=false` |
+
+每段以 `{ fromY, toY, holdDuration, isReal }` 记录，所有 Y 都从 `[HAIR_TARGET_Y_MIN, HAIR_TARGET_Y_MAX] = [240, 310]` 范围随机抽。生成时把 `realY` 写入 `game.targetY`（Step 6 评分会用）。
+
+**运行阶段**（`update(dt)`）— 状态机内的子状态机：
+
+| `gesture.phase` | 行为 |
+|-----------------|------|
+| `transition` | `handY = lerp(fromY, toY, easeInOut(t))`，`t = phaseTime / HAND_TRANSITION_TIME (0.4s)` |
+| `hold`       | 保持 `toY`；若 `isReal`，叠加 `sin(2π·NOD_FREQ·t) · NOD_AMPLITUDE` 做点头 |
+| `exiting`    | 序列走完，从最后位置回退到 `H+80`（屏幕外） |
+| `paused`     | `HAND_PAUSE_AFTER (0.5s)` 后自动 `transitionTo(SETTING_GUIDE)` |
+
+手图：`Assets/finger.png`，按 `HAND_BASE_X = 165` 居中绘制（脸的左侧，方便手调）。
+
+### 8.3 SETTING_GUIDE：拖动虚线 + 确认按钮
+
+**虚线状态**：
+```javascript
+const guide = { y: GUIDE_DEFAULT_Y, dragging: false };
+```
+
+**拖动判定**（`mousedown`）：
+- 命中按钮（`CONFIRM_BTN` 矩形）→ `game.playerGuideY = guide.y; transitionTo(AIMING)`
+- 命中虚线：`|y - guide.y| ≤ GUIDE_HIT_VERT (12)` **且** `x ∈ [HAIR_LEFT_X-20, HAIR_RIGHT_X+20]` → 进入拖动
+
+**拖动**（`mousemove` 时若 `guide.dragging`）：
+- `guide.y = clamp(mouseY, CY0+20, CYBT+20)` —— 限制在刘海可见范围
+
+**渲染**：
+- 红虚线（`#d04545`，`setLineDash([8, 6])`），横跨 `[HAIR_LEFT_X-10, HAIR_RIGHT_X+10]`
+- 右端一个实心圆点把手暗示可拖
+- 确认按钮 canvas 内绘制：白底 + 黑边 + 阴影 + "✓ 确认"，位置 `(W/2-60, 470, 120×36)`
+
+### 8.4 AIMING：沿用 v5 物理 + v6 切割
+
+`enter()` 调 `resetScissor()` 并将 `scissorFadeIn` 置 0；`update` 推进 `scissorFadeIn` 在 0.5s 内涨到 1，作为 `drawScissor` 的 `globalAlpha`。其余等同 v6。
+
+进入 AIMING 后 `guide.y` 转存为 `game.playerGuideY`，虚线以 30% alpha 继续显示作为视觉参考。
+
+剪刀飞出左侧（`sc.x < -SC_LEN`）触发 `resetGame()`：重置发丝、剪刀、`game.targetY/playerGuideY/guide.y`，回到 `GESTURING` 重新走流程。
+
+### 8.5 输入屏蔽
+
+| 状态 | Space | J | 鼠标 down/move/up |
+|------|-------|---|-------------------|
+| GESTURING     | 无效 | 无效 | 无效 |
+| SETTING_GUIDE | 无效 | 无效 | 仅响应虚线拖动 + 按钮点击 |
+| AIMING        | 抬升 | 切割 | 切割（debug） |
+
+实现方式：`stateGesturing.handleInput` 是空函数；`stateSettingGuide.handleInput` 只匹配 `mousedown/move/up`；`stateAiming.handleInput` 处理键盘 + 鼠标的切割。
+
+### 8.6 调试跳过
+
+- **K 键**（在 `GESTURING` 或 `SETTING_GUIDE` 时）：直接跳到 `AIMING`，自动补未生成的 `targetY` / `playerGuideY`
+- **`⏭ 直接进切割` 按钮**：同 K 键
+- **🔵 调试**：HUD 右上角额外显示 `targetY / playerGuideY / guide.y`，GESTURING 阶段画出 `targetY` 横线（橙色虚线）
+
+### 8.7 状态相关全局变量
+
+```javascript
+const game = {
+  targetY:      null,   // NPC 真目标 Y（Step 6 评分用）
+  playerGuideY: null,   // 玩家确认的虚线 Y（Step 6 评分用）
+};
+```
+
+未来 Step 6 评分模块直接读这两个值，不需要再去状态机内部翻数据。
+
+---
+
+## 九、待实现部分（v7 之后）
+
+GDD 第十章开发优先级里，已完成 1（剪刀手感）/ 2（头发切割）/ 5（NPC 比划）/ 6（虚线设定）。剩下：
 
 | 项 | 关键技术点 | 预计涉及 |
 |---|----------|---------|
-| 掉落动画 | 切下来的发丝段加上 vy 与 gravity，独立 update，到地落消失 | 新增 `fallingPieces[]` |
-| 虚线设定 UI | mousedown 拖动 + 确认按钮，state machine 切阶段 | 新增 `gameState`：`SETUP / CUT / RESULT` |
-| 评分 | 长度分（指数衰减 + 不对称惩罚）、直线分（max-min Y） | 新增 `score.js` 模块 |
-| NPC 比划 | 时间轴 + 噪声停留点动画 | 新增 `npcGesture.js` |
+| 评分 | 长度分（指数衰减 + 不对称惩罚）、直线分（max-min Y），用 `game.targetY` / `game.playerGuideY` / 切割轨迹计算 | 新增 RESULT 状态 + 评分函数 |
+| 顾客反应 | 切割完成后切 RESULT 状态，根据星级显示 `Assets/01~04.png` | 新增 RESULT 状态渲染 |
+| 掉落动画 | 切下来的发丝段加 vy + gravity，独立 update，到地落消失 | 新增 `fallingPieces[]` |
+| 关卡 / 多顾客 | 每位顾客比划长度不同，重置后进新一轮 | 顾客队列 + 进度 |
 
 ---
 
@@ -428,6 +539,26 @@ bladeX1     = sc.x              // 螺丝（刀刃右端）
 
 // v6 边缘填充发丝
 EDGE_THETAS_DEG = [78, 82, 86, 90]   // 每侧 4 根，无 jitter，宽 6.5px
+
+// v7 NPC 比划
+HAND_BASE_X            = 165         // 手的水平位置（脸左侧）
+HAND_SIZE              = 72
+HAND_TRANSITION_TIME   = 0.4         // 位置间过渡（秒）
+HAND_PAUSE_AFTER       = 0.5         // 比划结束 → 进 SETTING_GUIDE 的暂停
+FAKE_STOP_RANGE        = [0.3, 0.8]
+REAL_STOP_RANGE        = [1.0, 1.5]
+HAIR_TARGET_Y_MIN/MAX  = 240 / 310   // 真目标 Y 抽样区间
+NOD_AMPLITUDE          = 4           // 真目标点头幅度（px）
+NOD_FREQUENCY          = 4           // Hz
+
+// v7 虚线 + 按钮
+GUIDE_HIT_VERT     = 12              // 拖动判定纵向半径
+GUIDE_X_PADDING    = 20              // 拖动判定横向扩展
+GUIDE_DEFAULT_Y    = H/2             // 进入 SETTING_GUIDE 时虚线初始 Y
+HAIR_LEFT_X        = 184             // 虚线左端 ≈ CX - R
+HAIR_RIGHT_X       = 416             // 虚线右端 ≈ CX + R
+CONFIRM_BTN        = (W/2-60, 470, 120, 36)
+SCISSOR_FADE_IN    = 0.5             // AIMING 进入时剪刀淡入时长
 ```
 
 ## 附录 B · 关于 Bezier-Arc 近似公式
